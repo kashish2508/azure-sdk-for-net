@@ -5,6 +5,7 @@ using NUnit.Framework;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Azure.Core;
+using System;
 
 namespace Azure.Developer.Playwright.NUnit;
 
@@ -27,6 +28,7 @@ public class PlaywrightServiceBrowserNUnit : PlaywrightServiceBrowserClient
         }
     )
     {
+        nunitLogger.LogInformation("[NUNIT] Default constructor called");
         // no-op
     }
 
@@ -42,6 +44,7 @@ public class PlaywrightServiceBrowserNUnit : PlaywrightServiceBrowserClient
         credential: credential
     )
     {
+        nunitLogger.LogInformation("[NUNIT] Constructor with credential called");
         // no-op
     }
 
@@ -53,6 +56,7 @@ public class PlaywrightServiceBrowserNUnit : PlaywrightServiceBrowserClient
         options: options
     )
     {
+        nunitLogger.LogInformation("[NUNIT] Constructor with options called");
         _options = options;
     }
 
@@ -66,6 +70,7 @@ public class PlaywrightServiceBrowserNUnit : PlaywrightServiceBrowserClient
         options: InjectNUnitLogger(options)
     )
     {
+        nunitLogger.LogInformation("[NUNIT] Constructor with credential and options called");
         _options = options;
     }
 
@@ -76,11 +81,18 @@ public class PlaywrightServiceBrowserNUnit : PlaywrightServiceBrowserClient
     [OneTimeSetUp]
     public async Task InitializeAsync()
     {
+        nunitLogger.LogInformation("[NUNIT] OneTimeSetUp InitializeAsync called");
         if (!_options.UseCloudHostedBrowsers)
+        {
+            nunitLogger.LogInformation("[NUNIT] Cloud hosted browsers disabled, exiting initialization");
             return;
-        nunitLogger.LogInformation("\nRunning tests using Azure Playwright service.\n");
+        }
+        nunitLogger.LogInformation("[NUNIT] Running tests using Azure Playwright service");
+        nunitLogger.LogInformation("\nRunning kashish using Azure Playwright service.\n");
 
+        nunitLogger.LogInformation("[NUNIT] Calling base.InitializeAsync() to set up authentication and create test run");
         await base.InitializeAsync().ConfigureAwait(false);
+        nunitLogger.LogInformation("[NUNIT] InitializeAsync completed");
     }
 
     /// <summary>
@@ -89,12 +101,24 @@ public class PlaywrightServiceBrowserNUnit : PlaywrightServiceBrowserClient
     [OneTimeTearDown]
     public override async Task DisposeAsync()
     {
+        nunitLogger.LogInformation("[NUNIT] OneTimeTearDown DisposeAsync called");
+        nunitLogger.LogInformation("[NUNIT] Calling base.DisposeAsync() to clean up resources");
         await base.DisposeAsync().ConfigureAwait(false);
+        nunitLogger.LogInformation("[NUNIT] DisposeAsync completed");
     }
 
     private static PlaywrightServiceBrowserClientOptions InjectNUnitLogger(PlaywrightServiceBrowserClientOptions options)
     {
-        options.Logger ??= nunitLogger;
+        nunitLogger.LogInformation("[NUNIT] InjectNUnitLogger called");
+        if (options.Logger == null)
+        {
+            nunitLogger.LogInformation("[NUNIT] Injecting NUnit logger into options");
+            options.Logger = nunitLogger;
+        }
+        else
+        {
+            nunitLogger.LogInformation("[NUNIT] Options already has a logger, not injecting NUnit logger");
+        }
         return options;
     }
 }

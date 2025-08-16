@@ -88,6 +88,7 @@ public class PlaywrightServiceBrowserClient : IDisposable
 
     internal PlaywrightServiceBrowserClient(IEnvironment? environment = null, IEntraLifecycle? entraLifecycle = null, JsonWebTokenHandler? jsonWebTokenHandler = null, CIProvider? ciProvider = null, ILogger? logger = null, ClientUtilities? clientUtility = null, PlaywrightServiceBrowserClientOptions? options = null, TokenCredential? tokenCredential = null, IPlaywrightVersion? playwrightVersion = null, TestRunUpdateClient? testRunUpdateClient = null)
     {
+        _logger?.LogInformation("[CORE] PlaywrightServiceBrowserClient constructor called");
         _environment = environment ?? new EnvironmentHandler();
         _playwrightVersion = playwrightVersion ?? new PlaywrightVersion();
         _clientUtility = clientUtility ?? new ClientUtilities(_environment, playwrightVersion: _playwrightVersion);
@@ -98,6 +99,7 @@ public class PlaywrightServiceBrowserClient : IDisposable
         _entraLifecycle = entraLifecycle ?? new EntraLifecycle(jsonWebTokenHandler: _jsonWebTokenHandler, logger: _logger, environment: _environment, tokenCredential: tokenCredential);
         _testRunUpdateClient = testRunUpdateClient;
         _playwrightVersion.ValidatePlaywrightVersion();
+        _logger?.LogInformation("[CORE] Setting up default environment variables");
         // Call getters to set default environment variables if not already set before
         _ = _options.OS;
         _ = _options.RunId;
@@ -105,6 +107,7 @@ public class PlaywrightServiceBrowserClient : IDisposable
         _ = _options.ExposeNetwork;
         _ = _options.ServiceAuth;
         _ = _options.UseCloudHostedBrowsers;
+        _logger?.LogInformation("[CORE] PlaywrightServiceBrowserClient constructor completed");
     }
 
     /// <summary>
@@ -120,35 +123,57 @@ public class PlaywrightServiceBrowserClient : IDisposable
     public virtual async Task<ConnectOptions<T>> GetConnectOptionsAsync<T>(OSPlatform? os = null, string? runId = null, string? exposeNetwork = null, CancellationToken cancellationToken = default) where T : class, new()
 #pragma warning restore AZC0015 // Unexpected client method return type.
     {
+        _logger?.LogInformation("[CORE] GetConnectOptionsAsync<{0}> called", typeof(T).Name);
         var environmentValueForUseCloudHostedBrowsers = _environment.GetEnvironmentVariable(Constants.s_playwright_service_use_cloud_hosted_browsers_environment_variable);
         if (bool.TryParse(environmentValueForUseCloudHostedBrowsers, out var useCloudHostedBrowsers) && !useCloudHostedBrowsers)
         {
             if (!useCloudHostedBrowsers)
             {
+                _logger?.LogInformation("[CORE] Cloud hosted browsers are disabled, throwing exception");
                 throw new Exception(Constants.s_service_endpoint_removed_since_scalable_execution_disabled_error_message);
             }
         }
         if (string.IsNullOrEmpty(_options.ServiceEndpoint))
+        {
+            _logger?.LogInformation("[CORE] Service endpoint is not set, throwing exception");
             throw new Exception(Constants.s_no_service_endpoint_error_message);
+        }
+        _logger?.LogInformation("[CORE] Building connection parameters");
         string _serviceOs = Uri.EscapeDataString(ClientUtilities.GetServiceCompatibleOs(os) ?? ClientUtilities.GetServiceCompatibleOs(_options.OS)!);
         string _runId = Uri.EscapeDataString(runId ?? _options.RunId);
         string _exposeNetwork = exposeNetwork ?? _options.ExposeNetwork;
+        _logger?.LogInformation("[CORE] Using OS: {0}, RunId: {1}", _serviceOs, _runId);
 
         string wsEndpoint = $"{_options.ServiceEndpoint!}?os={_serviceOs}&runId={_runId}&api-version={_options.VersionString}";
+        _logger?.LogInformation("[CORE] WebSocket endpoint: {0}", wsEndpoint);
 
         // fetch Entra id access token if required
         // 1. Entra id access token has been fetched once via global functions
         // 2. Not close to expiry
-        if (!string.IsNullOrEmpty(_entraLifecycle.GetEntraIdAccessToken()) && _entraLifecycle.DoesEntraIdAccessTokenRequireRotation())
+        if (!string.IsNullOrEmpty(_entraLifecycle.GetEntraIdAccessToken()))
         {
-            await _entraLifecycle.FetchEntraIdAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+            if (_entraLifecycle.DoesEntraIdAccessTokenRequireRotation())
+            {
+                _logger?.LogInformation("[CORE] Entra ID token requires rotation, fetching new token");
+                await _entraLifecycle.FetchEntraIdAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                _logger?.LogInformation("[CORE] Entra ID token is valid, no rotation needed");
+            }
+        }
+        else
+        {
+            _logger?.LogInformation("[CORE] No Entra ID token found");
         }
         if (string.IsNullOrEmpty(_options.AuthToken))
         {
+            _logger?.LogInformation("[CORE] Access token not found, throwing exception");
             _logger?.LogError("Access token not found when trying to call GetConnectOptionsAsync.");
             throw new Exception(Constants.s_no_auth_error);
         }
 
+        _logger?.LogInformation("[CORE] Creating browser connect options");
         var browserConnectOptions = new BrowserConnectOptions
         {
             Timeout = 3 * 60 * 1000,
@@ -158,6 +183,7 @@ public class PlaywrightServiceBrowserClient : IDisposable
                 ["Authorization"] = $"Bearer {_options.AuthToken}"
             }
         };
+        _logger?.LogInformation("[CORE] GetConnectOptionsAsync completed");
         return new ConnectOptions<T>(wsEndpoint, BrowserConnectOptionsConverter.Convert<T>(browserConnectOptions));
     }
 
@@ -222,13 +248,16 @@ public class PlaywrightServiceBrowserClient : IDisposable
     public virtual async Task InitializeAsync(CancellationToken cancellationToken = default)
 #pragma warning restore AZC0015 // Unexpected client method return type.
     {
+        _logger?.LogInformation("[CORE] InitializeAsync called");
         if (string.IsNullOrEmpty(_options.ServiceEndpoint))
         {
+            _logger?.LogInformation("[CORE] Exiting initialization as service endpoint is not set");
             _logger?.LogInformation("Exiting initialization as service endpoint is not set.");
             return;
         }
         if (!_options.UseCloudHostedBrowsers)
         {
+            _logger?.LogInformation("[CORE] Disabling scalable execution since UseCloudHostedBrowsers is set to false");
             // Since playwright-dotnet checks PLAYWRIGHT_SERVICE_ACCESS_TOKEN and PLAYWRIGHT_SERVICE_URL to be set, remove PLAYWRIGHT_SERVICE_URL so that tests are run locally.
             // If customers use GetConnectOptionsAsync, after setting disableScalableExecution, an error will be thrown.
             _logger?.LogInformation("Disabling scalable execution since UseCloudHostedBrowsers is set to false.");
@@ -238,16 +267,23 @@ public class PlaywrightServiceBrowserClient : IDisposable
         // If default auth mechanism is Access token and token is available in the environment variable, no need to setup rotation handler
         if (_options.ServiceAuth == ServiceAuthType.AccessToken)
         {
+            _logger?.LogInformation("[CORE] Auth mechanism is Access Token");
             _logger?.LogInformation("Auth mechanism is Access Token.");
             _clientUtility.ValidateMptPAT(_options.AuthToken, _options.ServiceEndpoint!);
+            _logger?.LogInformation("[CORE] Creating test run with Access Token auth");
             await CreateTestRunPatchCallAsync(_options.AuthToken, cancellationToken).ConfigureAwait(false);
             return;
         }
+        _logger?.LogInformation("[CORE] Auth mechanism is Entra Id");
         _logger?.LogInformation("Auth mechanism is Entra Id.");
+        _logger?.LogInformation("[CORE] Fetching Entra ID access token");
         await _entraLifecycle!.FetchEntraIdAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+        _logger?.LogInformation("[CORE] Setting up token rotation timer (every {0} minutes)", Constants.s_entra_access_token_rotation_interval_period_in_minutes);
         RotationTimer = new Timer(RotationHandlerAsync, null, TimeSpan.FromMinutes(Constants.s_entra_access_token_rotation_interval_period_in_minutes), TimeSpan.FromMinutes(Constants.s_entra_access_token_rotation_interval_period_in_minutes));
         string? entraIdToken = _entraLifecycle.GetEntraIdAccessToken();
+        _logger?.LogInformation("[CORE] Creating test run with Entra ID token");
         await CreateTestRunPatchCallAsync(entraIdToken, cancellationToken).ConfigureAwait(false);
+        _logger?.LogInformation("[CORE] InitializeAsync completed");
     }
 
     /// <summary>
@@ -310,17 +346,34 @@ public class PlaywrightServiceBrowserClient : IDisposable
     public virtual void Dispose()
 #pragma warning restore AZC0015 // Unexpected client method return type.
     {
+        _logger?.LogInformation("[CORE] Dispose called - cleaning up resources");
         _logger?.LogInformation("Cleaning up Playwright service resources.");
-        RotationTimer?.Dispose();
+        if (RotationTimer != null)
+        {
+            _logger?.LogInformation("[CORE] Disposing token rotation timer");
+            RotationTimer?.Dispose();
+        }
+        else
+        {
+            _logger?.LogInformation("[CORE] No rotation timer to dispose");
+        }
         GC.SuppressFinalize(this);
+        _logger?.LogInformation("[CORE] Dispose completed");
     }
 
     internal async void RotationHandlerAsync(object? _)
     {
+        _logger?.LogInformation("[CORE] RotationHandlerAsync called - checking if token needs rotation");
         if (_entraLifecycle!.DoesEntraIdAccessTokenRequireRotation())
         {
+            _logger?.LogInformation("[CORE] Token requires rotation - fetching new Entra ID token");
             _logger?.LogInformation("Rotating Entra Id access token.");
             await _entraLifecycle.FetchEntraIdAccessTokenAsync(default).ConfigureAwait(false);
+            _logger?.LogInformation("[CORE] Token rotation completed");
+        }
+        else
+        {
+            _logger?.LogInformation("[CORE] Token does not require rotation");
         }
     }
 
@@ -348,14 +401,18 @@ public class PlaywrightServiceBrowserClient : IDisposable
     /// <returns>A task representing the asynchronous operation</returns>
     private async Task CreateTestRunPatchCallAsync(string? authToken, CancellationToken cancellationToken = default)
     {
+        _logger?.LogInformation("[CORE] CreateTestRunPatchCallAsync called");
         if (string.IsNullOrEmpty(authToken))
         {
+            _logger?.LogInformation("[CORE] Cannot create test run: Auth token is null or empty");
             _logger?.LogError("Cannot create test run: Auth token is null or empty");
             return;
         }
         string apiUrl = _clientUtility.GetTestRunApiUrl();
+        _logger?.LogInformation("[CORE] Test run API URL: {0}", apiUrl);
         Uri endpoint = new(apiUrl);
         _testRunUpdateClient ??= CreateTestRunUpdateClientWithRetry(endpoint);
+        _logger?.LogInformation("[CORE] Preparing test run information");
         Model.CIInfo cIInfo = _ciProvider.GetCIInfo();
         Model.RunConfig runConfig = _clientUtility.GetTestRunConfig();
         var patchBody = new
@@ -364,6 +421,7 @@ public class PlaywrightServiceBrowserClient : IDisposable
             ciConfig = cIInfo,
             config = runConfig
         };
+        _logger?.LogInformation("[CORE] Test run display name: {0}", _options.RunName);
         var options = new JsonSerializerOptions
         {
             WriteIndented = true,
@@ -375,6 +433,7 @@ public class PlaywrightServiceBrowserClient : IDisposable
         {
             var workspaceId = _clientUtility.ExtractWorkspaceIdFromEndpoint(_options.ServiceEndpoint!);
             var testRunId = _options.RunId;
+            _logger?.LogInformation("[CORE] Creating test run with ID: {0} in workspace: {1}", testRunId, workspaceId);
             Response response = await _testRunUpdateClient.TestRunsAsync(
                  workspaceId: workspaceId,
                 testRunId: testRunId,
@@ -382,10 +441,12 @@ public class PlaywrightServiceBrowserClient : IDisposable
                 authorization: $"Bearer {authToken}",
                 xCorrelationId: Guid.NewGuid().ToString()
             ).ConfigureAwait(false);
+            _logger?.LogInformation("[CORE] Test run created successfully");
             _logger?.LogInformation("Test run created successfully.");
         }
         catch (RequestFailedException ex)
         {
+            _logger?.LogInformation("[CORE] Failed to create test run: {0}", ex.Message);
             _logger?.LogError($"Failed to create the test run in the Playwright service: {ex.Message}. Please refer to https://aka.ms/pww/docs/troubleshooting for more information.");
             throw new Exception(Constants.s_playwright_service_create_test_run_error, ex);
         }
